@@ -1,4 +1,6 @@
-import asyncio
+git branch -M main
+git remote add origin https://github.com/Cevheri-Software/servo-mission-scripts.git
+git push -u origin mainimport asyncio
 import math
 import random
 from mavsdk import System
@@ -9,6 +11,12 @@ data_rate = 0.1
 target_threshold = 0.5  # metre
 
 mission_active = True
+
+# Servo configuration
+SERVO_CHANNEL = 1  # AUX1 port (channels 1-8 available)
+SERVO_RELEASE_PWM = 2000  # PWM value for release position (1000-2000)
+SERVO_SECURE_PWM = 1000   # PWM value for secure position
+SERVO_HOLD_TIME = 1.0     # Time to hold release position (seconds)
 
 
 def calculate_yaw(dx, dy):
@@ -34,6 +42,68 @@ def ned_to_body(north, east, yaw_deg):
     x_body = north * math.cos(yaw_rad) + east * math.sin(yaw_rad)
     y_body = -north * math.sin(yaw_rad) + east * math.cos(yaw_rad)
     return x_body, y_body
+
+
+async def servo_release_payload(drone, channel=SERVO_CHANNEL):
+    """
+    Release payload by controlling servo motor
+    """
+    try:
+        print(f"📦 Payload release initiated on channel {channel}")
+        
+        # Move servo to release position
+        await drone.action.set_actuator(channel, SERVO_RELEASE_PWM)
+        print(f"🔓 Servo moved to release position (PWM: {SERVO_RELEASE_PWM})")
+        
+        # Hold the release position
+        await asyncio.sleep(SERVO_HOLD_TIME)
+        
+        # Return servo to secure position
+        await drone.action.set_actuator(channel, SERVO_SECURE_PWM)
+        print(f"🔒 Servo returned to secure position (PWM: {SERVO_SECURE_PWM})")
+        
+        print("✅ Payload release completed successfully!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Servo control error: {e}")
+        return False
+
+
+async def servo_test(drone, channel=SERVO_CHANNEL):
+    """
+    Test servo movement without releasing payload
+    """
+    try:
+        print(f"🔧 Testing servo on channel {channel}")
+        
+        # Test movement
+        await drone.action.set_actuator(channel, SERVO_RELEASE_PWM)
+        await asyncio.sleep(0.5)
+        await drone.action.set_actuator(channel, SERVO_SECURE_PWM)
+        await asyncio.sleep(0.5)
+        
+        print("✅ Servo test completed")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Servo test error: {e}")
+        return False
+
+
+async def initialize_servo(drone, channel=SERVO_CHANNEL):
+    """
+    Initialize servo to secure position at startup
+    """
+    try:
+        print(f"🔒 Initializing servo channel {channel} to secure position")
+        await drone.action.set_actuator(channel, SERVO_SECURE_PWM)
+        await asyncio.sleep(0.5)
+        print("✅ Servo initialized")
+        return True
+    except Exception as e:
+        print(f"❌ Servo initialization error: {e}")
+        return False
 
 
 async def generate_target_location():
@@ -89,15 +159,28 @@ async def get_current_yaw(drone):
         return attitude.yaw_deg
 
 
+async def check_for_release_command():
+    """
+    Check for keyboard input or other release triggers
+    You can modify this to check for external signals, GPS coordinates, etc.
+    """
+    # Simple example - you could expand this for actual input handling
+    # For now, we'll simulate a release after a certain condition
+    return False  # Change this logic based on your release trigger
+
+
 async def execute_mission(drone):
     global mission_active
     last_known_yaw = 0.0  # fallback
+    waypoint_count = 0
 
     try:
         async for dx, dy, _ in generate_target_location():
             if not mission_active:
                 print("🛑 Mission terminated")
                 break
+
+            waypoint_count += 1
 
             # Mevcut pozisyon ve yaw'ı al
             current_pos = await get_current_position(drone)
@@ -149,9 +232,18 @@ async def execute_mission(drone):
                     if dist < target_threshold:
                         print(f"✅ Hedefe ulaşıldı! Mesafe: {dist:.2f} m")
                         reached = True
+                        
+                        # PAYLOAD RELEASE TRIGGER - Modify this condition as needed
+                        if waypoint_count == 3:  # Release payload at 3rd waypoint
+                            print("🎯 Release waypoint reached!")
+                            await servo_release_payload(drone)
                     else:
                         print(
                             f"⏳ Hedefe yaklaşılıyor: İleri:{dx_body:.2f} m Sağ:{dy_body:.2f} m (Toplam: {dist:.2f} m)")
+
+                    # Check for manual release command (you can modify this)
+                    if await check_for_release_command():
+                        await servo_release_payload(drone)
 
                 except OffboardError as offboard_err:
                     print(f"\n❌ Offboard control error: {offboard_err}")
@@ -185,6 +277,14 @@ async def main():
 
     try:
         drone = await connect_drone()
+        
+        # Initialize servo to secure position
+        await initialize_servo(drone)
+        
+        # Optional: Test servo before flight
+        print("🔧 Testing servo before takeoff...")
+        await servo_test(drone)
+        
         await takeoff(drone)
 
         if not await enter_offboard_mode(drone):
@@ -196,14 +296,18 @@ async def main():
     except KeyboardInterrupt:
         print('\n🛑 Görev kullanıcı tarafından durduruldu')
         if 'drone' in locals():
+            # Secure servo before landing
+            await initialize_servo(drone)
             await emergency_landing(drone)
     except Exception as e:
         print(f'\n❌ Kritik hata: {e}')
         if 'drone' in locals():
+            # Secure servo before landing
+            await initialize_servo(drone)
             await emergency_landing(drone)
     finally:
         mission_active = False
 
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     asyncio.run(main())
